@@ -11,7 +11,7 @@
 #ifdef pr_fmt
 #undef pr_fmt
 #endif
-#define pr_fmt(fmt) KBUILD_MODNAME ":%s(): " fmt, __func__
+#define pr_fmt(fmt) ":%s(): " fmt, __func__
 
 #define ZTXMAP_VERSION	"0.0.0"
 
@@ -140,8 +140,77 @@ static long ztxmap_ioctl(struct file *filp,
 }
 	
 
+static vm_fault_t ztxmap_mem_fault(struct vm_fault *vmf)
+{
+	struct ztxmap_ctx * ctx = vmf->vma->vm_file->private_data;
+	struct vm_area_struct *vma = vmf->vma;
+	unsigned long pagenum = vmf->pgoff;
+	struct page *page;
+	unsigned long pfn;
+	phys_addr_t pa;
+
+	pr_debug("vma->vm_pgoff=%ld, vmf->pgoff=%ld\n",
+		 vma->vm_pgoff, vmf->pgoff);
+
+	pa = virt_to_phys(ctx->mem + (pagenum << PAGE_SHIFT));
+	if (pa == 0) {
+		pr_err("wrong pa\n");
+		return VM_FAULT_SIGBUS;
+	}
+
+	pfn = pa >> PAGE_SHIFT;
+	if (!pfn_valid(pfn)) {
+		pr_err("invalid pfn %lx\n", pfn);
+		return VM_FAULT_SIGBUS;
+	}
+
+	pr_debug("%lx page is mapped to 0x%llx\n",
+		 pagenum, pa);
+
+	page = pfn_to_page(pfn);
+	get_page(page);
+	vmf->page = page;
+
+	return 0;
+}
+
+static vm_fault_t ztxmap_mem_huge_fault(struct vm_fault *vmf,
+				 enum page_entry_size pe_size)
+{
+	pr_warn("\n");
+	return 0;
+}
+
+static const struct vm_operations_struct ztxmap_mmap_ops = {
+	.fault		= ztxmap_mem_fault,
+	.huge_fault	= ztxmap_mem_huge_fault,
+};
+
+static int ztxmap_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+	unsigned long off = vma->vm_pgoff << PAGE_SHIFT;
+	unsigned long len = vma->vm_end - vma->vm_start;
+	struct ztxmap_ctx *ctx = filp->private_data;
+
+	if (!ctx->mem) {
+		pr_err("ztxmap not registered\n");
+		return -EINVAL;
+	}
+
+	if (off + len > ctx->size) {
+		pr_err("%lu + %lu-byte exceeds the requiested size "
+		       "in registration (%lu-byte)", off, len, ctx->size);
+		return -ENOMEM;
+	}
+
+	vma->vm_ops = &ztxmap_mmap_ops;
+
+	return 0;
+}
+
 static const struct file_operations ztxmap_fops = {
 	.owner		= THIS_MODULE,
+	.mmap		= ztxmap_mmap,
 	.open		= ztxmap_open,
 	.release	= ztxmap_release,
 	.unlocked_ioctl	= ztxmap_ioctl,
