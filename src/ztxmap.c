@@ -143,14 +143,10 @@ static long ztxmap_ioctl(struct file *filp,
 static vm_fault_t ztxmap_mem_fault(struct vm_fault *vmf)
 {
 	struct ztxmap_ctx * ctx = vmf->vma->vm_file->private_data;
-	struct vm_area_struct *vma = vmf->vma;
 	unsigned long pagenum = vmf->pgoff;
 	struct page *page;
 	unsigned long pfn;
 	phys_addr_t pa;
-
-	pr_debug("vma->vm_pgoff=%ld, vmf->pgoff=%ld\n",
-		 vma->vm_pgoff, vmf->pgoff);
 
 	pa = virt_to_phys(ctx->mem + (pagenum << PAGE_SHIFT));
 	if (pa == 0) {
@@ -164,8 +160,7 @@ static vm_fault_t ztxmap_mem_fault(struct vm_fault *vmf)
 		return VM_FAULT_SIGBUS;
 	}
 
-	pr_debug("%lx page is mapped to 0x%llx\n",
-		 pagenum, pa);
+	//pr_debug("%lu page is mapped to 0x%llx\n", pagenum, pa);
 
 	page = pfn_to_page(pfn);
 	get_page(page);
