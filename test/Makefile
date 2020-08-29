@@ -4,7 +4,7 @@ CC = gcc
 INCLUDE := -I../src
 CFLAGS := -g -Wall $(INCLUDE)
 
-PROGNAME = ioctl mmap
+PROGNAME = ioctl mmap tx
 
 all: $(PROGNAME)
 
