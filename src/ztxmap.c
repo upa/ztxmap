@@ -120,10 +120,44 @@ static int ztxmap_ioctl_unreg(struct file *filp)
 	return 0;
 }
 
+static int ztxmap_xmit(struct sk_buff *skb)
+{
+	struct net_device *dev = skb->dev;
+	struct netdev_queue *txq;
+	int cpu = smp_processor_id();
+	int ret;
+
+	txq = netdev_get_tx_queue(dev, cpu);
+
+	HARD_TX_LOCK(dev, txq, cpu);
+	local_bh_disable();
+
+	if (unlikely(!netif_running(dev) || !netif_carrier_ok(dev) ||
+		     netif_xmit_frozen_or_drv_stopped(txq))) {
+		/* cannot xmit, free cloned skb and goto next */
+		kfree_skb(skb);
+		ret = -EBUSY;
+		goto out;
+	}
+
+	ret = netdev_start_xmit(skb, dev, txq, 0);
+	if (!dev_xmit_complete(ret)) {
+		net_info_ratelimited("xmit failed\n");
+		kfree_skb(skb);
+	}
+
+out:
+	HARD_TX_UNLOCK(dev, txq);
+	local_bh_enable();
+
+	return ret;
+}
+
 static long ztxmap_ioctl_tx(struct file *filp, unsigned long data)
 {
-	struct sk_buff *skb;
+	struct sk_buff *skb, *pskb;
 	struct ztxmap_ctx *ctx;
+	void *head;
 	int ret, n;
 
 	struct {
@@ -153,20 +187,46 @@ static long ztxmap_ioctl_tx(struct file *filp, unsigned long data)
 	}
 
 	for (n = 0; n < ztx.tx.cnt; n++) {
-		phys_addr_t pa, offset;
+		uintptr_t offset;
 		struct page *page;
 
-		pa = virt_to_phys(ctx->mem + ztx.vec[n].offset);
-		offset = pa - ((pa >> PAGE_SHIFT) << PAGE_SHIFT);
-		page = pfn_to_page(pa >> PAGE_SHIFT);
-		/* XXX: I think get_page is not needed because it was
-		 * already done by mmap() */
-		skb_fill_page_desc(skb, 0, page, offset, ztx.vec[n].length);
+		pr_debug("ztxmap_vec: offset=%u length=%u\n",
+			 ztx.vec[n].offset, ztx.vec[n].length);
+
+		if (unlikely(skb->len + ztx.vec[n].length > ctx->size)) {
+			pr_err("invalid length %u\n", ztx.vec[n].length);
+			kfree_skb(skb);
+			return -EINVAL;
+		}
+
+		page = virt_to_page(ctx->mem + ztx.vec[n].offset);
+		offset = offset_in_page(ctx->mem + ztx.vec[n].offset);
+
+		get_page(page);	/* XXXXXXXXX!!!!!!!!!!!!!!!! need put */
+		/* XXX: If a process that calls mmap() ended before
+		 * packet transmission, that causes page fault. */
+
+		skb_fill_page_desc(skb, skb_shinfo(skb)->nr_frags, page,
+				   offset, ztx.vec[n].length);
+		skb->len += ztx.vec[n].length;
+		skb->data_len += ztx.vec[n].length;
+
+		if (n == 0)
+			head = ctx->mem + ztx.vec[n].offset;
 	}
 
-	skb_set_mac_header(skb, 0);
+	pr_debug("skb->len is %u\n", skb->len);
 
-	return dev_queue_xmit(skb);
+	skb_set_mac_header(skb, 0);
+	skb_zcopy_set_nouarg(skb, head); /* ???? */
+
+	pskb = skb_clone(skb, GFP_ATOMIC);
+	if (!pskb) {
+		pr_err("failed to copy skb\n");
+		return -ENOMEM;
+	}
+
+	return ztxmap_xmit(pskb);
 }
 
 static long ztxmap_ioctl(struct file *filp,

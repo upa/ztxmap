@@ -10,7 +10,7 @@
 struct ztx {
 	struct ztxmap_tx	tx;
 	struct ztxmap_vec	vec[MAX_SKB_FRAGS];
-};
+} __attribute__((__packed__));
 
 /* copied from samples/bpf/xdpsock_user.c */
 static const char pkt_data[] =
@@ -25,6 +25,8 @@ int main(int argc, char **argv)
 	struct ztx ztx;
 	int fd, ret;
 	void *mem;
+
+	memset(&ztx, 0, sizeof(ztx));
 
 	if (argc < 2) {
 		printf("usage: %s [devname]\n", argv[0]);
@@ -57,14 +59,18 @@ int main(int argc, char **argv)
 		return -1;
 	}
 
-	printf("try tx, vec 1, pktlen %lu\n", sizeof(pkt_data));
+	printf("try tx, vec 1, pktlen %d\n", 64);
 
-	memcpy(mem, pkt_data, sizeof(pkt_data));
+	memcpy(mem, pkt_data, 64);
 	ztx.tx.cnt = 1;
 	ztx.vec[0].offset = 0;
-	ztx.vec[1].length = sizeof(pkt_data);
+	ztx.vec[0].length = 64;
 
 	ret = ioctl(fd, ZTXMAP_TX, &ztx);
+	if (ret) {
+		perror("ioctl ZTXMAP_TX");
+		return -1;
+	}
 
 	printf("ioctl ZTXMAP_UNREG\n");
 	ret = ioctl(fd, ZTXMAP_UNREG, 0);
